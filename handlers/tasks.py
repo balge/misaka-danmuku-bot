@@ -1,10 +1,11 @@
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import ContextTypes, CommandHandler
+from telegram.constants import ParseMode # 建议显式导入ParseMode
 from utils.permission import check_user_permission
 from utils.api import call_danmaku_api
 import logging
 from datetime import datetime
-from typing import List, Dict, Any
+from typing import List
 
 # 初始化日志
 logger = logging.getLogger(__name__)
@@ -20,14 +21,50 @@ def get_status_display(status: str) -> str:
     return STATUS_MAPPING.get(status, status)
 
 def escape_markdown(text: str) -> str:
-    """转义Markdown特殊字符"""
-    if not text:
-        return text
-    # 转义Markdown特殊字符
-    special_chars = ['*', '_', '`', '[', ']', '(', ')', '~', '>', '#', '+', '-', '=', '|', '{', '}', '.', '!']
+    """转义Markdown V2的特殊字符"""
+    if not isinstance(text, str):
+        return ""
+    # 这是MarkdownV2需要转义的特殊字符
+    special_chars = r'_*[]()~`>#+-=|{}.!'
     for char in special_chars:
         text = text.replace(char, f'\\{char}')
     return text
+
+# ==================== 新增的消息分割函数 ====================
+def split_message_by_lines(text: str, chunk_size: int = 4096) -> list[str]:
+    """
+    按行分割长文本，确保每个分片不超过 Telegram 的最大长度限制。
+    这是为了确保消息能被正常发送。
+    """
+    if len(text) <= chunk_size:
+        return [text]
+
+    chunks = []
+    current_chunk = ""
+    lines = text.split('\n')
+
+    for line in lines:
+        # 预检查：如果当前块加上新的一行会超长
+        if len(current_chunk) + len(line) + 1 > chunk_size:
+            # 如果当前块有内容，先保存
+            if current_chunk:
+                chunks.append(current_chunk)
+            # 重置当前块
+            current_chunk = line
+        else:
+            # 如果当前块是空的，直接赋值
+            if not current_chunk:
+                current_chunk = line
+            # 否则，添加新行
+            else:
+                current_chunk += '\n' + line
+
+    # 不要忘记最后一个分片
+    if current_chunk:
+        chunks.append(current_chunk)
+        
+    return chunks
+# ==========================================================
 
 @check_user_permission
 async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -40,7 +77,6 @@ async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         args = context.args
         status = "in_progress"  # 默认状态
         
-        # 如果用户提供了参数，解析status
         if args:
             for arg in args:
                 if arg.startswith("status="):
@@ -59,29 +95,24 @@ async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         tasks_data = api_response["data"]
         
+        status_display = get_status_display(status)
         if not tasks_data or len(tasks_data) == 0:
-            status_display = get_status_display(status)
             await update.message.reply_text(
                 f"📋 暂无 {status_display} 状态的任务"
             )
             return
 
         # 格式化任务列表消息
-        status_display = get_status_display(status)
-        message = f"📋 **任务列表** (状态: {status_display})\n\n"
+        message = f"📋 *任务列表* \\(状态: {status_display}\\)\n\n"
         
         for i, task in enumerate(tasks_data, 1):
-            # 必须显示的字段
             task_id = task.get("taskId", "未知")
             title = task.get("title", "未知任务")
             progress = task.get("progress", 0)
-            
-            # 可选显示的字段
             description = task.get("description", "")
             created_at = task.get("createdAt", "")
             task_status = task.get("status", "未知")
             
-            # 格式化创建时间
             formatted_time = ""
             if created_at:
                 try:
@@ -90,24 +121,22 @@ async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 except:
                     formatted_time = created_at
             
-            # 构建任务信息
             escaped_title = escape_markdown(title)
-            task_info = f"{i}. **{escaped_title}**\n"
-            task_info += f"   🆔 ID: `{task_id}`\n"
-            task_info += f"   📊 进度: {progress}%\n"
+            task_info = f"*{i}\\. {escaped_title}*\n"
+            task_info += f"    🆔 ID: `{task_id}`\n"
+            task_info += f"    📊 进度: {progress}%\n"
             
-            if task_status != status:  # 如果状态与过滤条件不同，显示实际状态
+            if task_status != status:
                 task_status_display = get_status_display(task_status)
-                task_info += f"   🏷️ 状态: {task_status_display}\n"
+                task_info += f"    🏷️ 状态: {task_status_display}\n"
             
             if description:
-                # 限制描述长度，避免消息过长
                 desc_preview = description[:50] + "..." if len(description) > 50 else description
                 escaped_desc = escape_markdown(desc_preview)
-                task_info += f"   📝 描述: {escaped_desc}\n"
+                task_info += f"    📝 描述: {escaped_desc}\n"
             
             if formatted_time:
-                task_info += f"   🕐 创建时间: {formatted_time}\n"
+                task_info += f"    🕐 创建时间: {escape_markdown(formatted_time)}\n"
             
             message += task_info + "\n"
         
@@ -120,12 +149,22 @@ async def tasks_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await update.message.reply_text(
-            message,
-            parse_mode="Markdown",
-            reply_markup=reply_markup
-        )
-        
+        # ==================== 修改后的发送逻辑 ====================
+        # 使用分割函数处理可能过长的消息
+        message_chunks = split_message_by_lines(message)
+        total_chunks = len(message_chunks)
+
+        for i, chunk in enumerate(message_chunks):
+            is_last_chunk = (i == total_chunks - 1)
+            
+            await update.message.reply_text(
+                text=chunk,
+                parse_mode=ParseMode.MARKDOWN_V2,
+                # 只在最后一条消息上附加按钮
+                reply_markup=reply_markup if is_last_chunk else None
+            )
+        # ========================================================
+            
         logger.info(f"✅ 用户 {update.effective_user.id} 查看了任务列表 (状态: {status})")
         
     except Exception as e:
