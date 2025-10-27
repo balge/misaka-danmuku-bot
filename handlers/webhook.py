@@ -1731,17 +1731,17 @@ class WebhookHandler:
         # if tvdb_id:
         #     return 'tvdb', tvdb_id, 'tvdb'
             
-        imdb_id = media_info.get('imdb_id')
-        if imdb_id:
-            return 'imdb', imdb_id, 'imdb'
+        # imdb_id = media_info.get('imdb_id')
+        # if imdb_id:
+        #     return 'imdb', imdb_id, 'imdb'
             
-        douban_id = media_info.get('douban_id')
-        if douban_id:
-            return 'douban', douban_id, 'douban'
+        # douban_id = media_info.get('douban_id')
+        # if douban_id:
+        #     return 'douban', douban_id, 'douban'
             
-        bangumi_id = media_info.get('bangumi_id')
-        if bangumi_id:
-            return 'bangumi', bangumi_id, 'bangumi'
+        # bangumi_id = media_info.get('bangumi_id')
+        # if bangumi_id:
+        #     return 'bangumi', bangumi_id, 'bangumi'
             
         return None, None, None
     
